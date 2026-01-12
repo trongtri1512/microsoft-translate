@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import { Users, Mic, MicOff, Volume2, UserPlus, LogOut, Settings, Copy, Trash2, RefreshCw } from 'lucide-react'
+import { Users, Mic, MicOff, Volume2, UserPlus, LogOut, Settings, Copy, Trash2, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { translateText } from '../services/translationService'
 import { languages } from '../data/languages'
+import socketService from '../services/socketService'
 
 const STORAGE_KEY = 'conversation_room_state'
-const PARTICIPANTS_KEY = 'conversation_participants'
 
 function ConversationMode() {
   const [roomCode, setRoomCode] = useState('')
@@ -19,12 +19,11 @@ function ConversationMode() {
   const [showSettings, setShowSettings] = useState(false)
   const [autoSpeak, setAutoSpeak] = useState(true)
   const [speechSpeed, setSpeechSpeed] = useState(0.9)
-  const [lastSync, setLastSync] = useState(Date.now())
+  const [isConnected, setIsConnected] = useState(false)
   const recognitionRef = useRef(null)
   const synthesisRef = useRef(null)
   const messagesEndRef = useRef(null)
   const silenceTimerRef = useRef(null)
-  const syncIntervalRef = useRef(null)
 
   useEffect(() => {
     const savedState = localStorage.getItem(STORAGE_KEY)
@@ -34,13 +33,24 @@ function ConversationMode() {
         setRoomCode(state.roomCode)
         setUserName(state.userName)
         setUserLanguage(state.userLanguage)
-        setIsInRoom(state.isInRoom)
         setMessages(state.messages || [])
-        addSystemMessage(`🔄 Đã khôi phục phòng ${state.roomCode}`)
       } catch (error) {
         console.error('Error restoring state:', error)
       }
     }
+
+    const socket = socketService.connect()
+    setIsConnected(socket.connected)
+
+    socket.on('connect', () => {
+      setIsConnected(true)
+      console.log('✅ Connected to server')
+    })
+
+    socket.on('disconnect', () => {
+      setIsConnected(false)
+      console.log('❌ Disconnected from server')
+    })
 
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -73,9 +83,8 @@ function ConversationMode() {
       if (recognitionRef.current) {
         recognitionRef.current.stop()
       }
-      if (syncIntervalRef.current) {
-        clearInterval(syncIntervalRef.current)
-      }
+      socketService.offAllListeners()
+      socketService.disconnect()
     }
   }, [])
 
@@ -85,7 +94,6 @@ function ConversationMode() {
         roomCode,
         userName,
         userLanguage,
-        isInRoom,
         messages
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
@@ -96,23 +104,30 @@ function ConversationMode() {
 
   useEffect(() => {
     if (isInRoom && roomCode && userName) {
-      console.log(`[Sync] Starting sync for ${userName} in room ${roomCode}`)
-      
-      syncParticipants()
-      
-      if (syncIntervalRef.current) {
-        clearInterval(syncIntervalRef.current)
-      }
-      
-      syncIntervalRef.current = setInterval(() => {
-        syncParticipants()
-      }, 3000)
-      
-      return () => {
-        console.log(`[Sync] Stopping sync for ${userName}`)
-        if (syncIntervalRef.current) {
-          clearInterval(syncIntervalRef.current)
+      socketService.onParticipantsUpdated((participants) => {
+        console.log(`👥 Participants updated: ${participants.length}`, participants)
+        setParticipants(participants)
+      })
+
+      socketService.onUserJoined(({ userName: newUser, userLanguage: newLang }) => {
+        addSystemMessage(`${newUser} đã tham gia phòng`)
+      })
+
+      socketService.onUserLeft(({ userName: leftUser }) => {
+        addSystemMessage(`${leftUser} đã rời khỏi phòng`)
+      })
+
+      socketService.onNewMessage((message) => {
+        setMessages(prev => [...prev, message])
+        
+        const myLanguage = userLanguage
+        if (message.translations[myLanguage]) {
+          speakText(message.translations[myLanguage], myLanguage)
         }
+      })
+
+      return () => {
+        socketService.offAllListeners()
       }
     }
   }, [isInRoom, roomCode, userName, userLanguage])
@@ -125,69 +140,41 @@ function ConversationMode() {
     return Math.random().toString(36).substring(2, 8).toUpperCase()
   }
 
-  const syncParticipants = () => {
-    if (!roomCode || !userName) return
-    
-    const roomKey = `${PARTICIPANTS_KEY}_${roomCode}`
-    const currentUser = {
-      id: userName,
-      name: userName,
-      language: userLanguage,
-      lastSeen: Date.now()
-    }
-    
-    let allParticipants = []
-    try {
-      const stored = localStorage.getItem(roomKey)
-      if (stored) {
-        allParticipants = JSON.parse(stored)
-        console.log(`[Sync] Read ${allParticipants.length} participants from storage`)
-      }
-    } catch (error) {
-      console.error('[Sync] Error reading participants:', error)
-    }
-    
-    const existingIndex = allParticipants.findIndex(p => p.id === userName)
-    if (existingIndex >= 0) {
-      allParticipants[existingIndex] = currentUser
-      console.log(`[Sync] Updated ${userName} in participants list`)
-    } else {
-      allParticipants.push(currentUser)
-      console.log(`[Sync] Added ${userName} to participants list`)
-    }
-    
-    const now = Date.now()
-    const beforeFilter = allParticipants.length
-    allParticipants = allParticipants.filter(p => now - p.lastSeen < 10000)
-    if (beforeFilter !== allParticipants.length) {
-      console.log(`[Sync] Removed ${beforeFilter - allParticipants.length} offline participants`)
-    }
-    
-    console.log(`[Sync] Final participant count: ${allParticipants.length}`, allParticipants.map(p => p.name))
-    
-    localStorage.setItem(roomKey, JSON.stringify(allParticipants))
-    setParticipants(allParticipants)
-    setLastSync(now)
-  }
 
-  const createRoom = () => {
+  const createRoom = async () => {
     if (!userName.trim()) {
       alert('Vui lòng nhập tên của bạn')
       return
     }
     const code = generateRoomCode()
     setRoomCode(code)
-    setIsInRoom(true)
-    addSystemMessage(`Phòng ${code} đã được tạo. Chia sẻ mã này với người khác để họ tham gia.`)
+    
+    try {
+      const data = await socketService.joinRoom(code, userName, userLanguage)
+      setIsInRoom(true)
+      setParticipants(data.participants)
+      addSystemMessage(`Phòng ${code} đã được tạo. Chia sẻ mã này với người khác để họ tham gia.`)
+    } catch (error) {
+      console.error('Error creating room:', error)
+      alert('Không thể tạo phòng. Vui lòng thử lại.')
+    }
   }
 
-  const joinRoom = () => {
+  const joinRoom = async () => {
     if (!userName.trim() || !roomCode.trim()) {
       alert('Vui lòng nhập tên và mã phòng')
       return
     }
-    setIsInRoom(true)
-    addSystemMessage(`${userName} đã tham gia phòng ${roomCode}`)
+    
+    try {
+      const data = await socketService.joinRoom(roomCode, userName, userLanguage)
+      setIsInRoom(true)
+      setParticipants(data.participants)
+      addSystemMessage(`${userName} đã tham gia phòng ${roomCode}`)
+    } catch (error) {
+      console.error('Error joining room:', error)
+      alert('Không thể tham gia phòng. Vui lòng kiểm tra mã phòng.')
+    }
   }
 
   const leaveRoom = () => {
@@ -196,17 +183,7 @@ function ConversationMode() {
     }
     
     if (roomCode) {
-      const roomKey = `${PARTICIPANTS_KEY}_${roomCode}`
-      try {
-        const stored = localStorage.getItem(roomKey)
-        if (stored) {
-          let allParticipants = JSON.parse(stored)
-          allParticipants = allParticipants.filter(p => p.id !== userName)
-          localStorage.setItem(roomKey, JSON.stringify(allParticipants))
-        }
-      } catch (error) {
-        console.error('Error removing participant:', error)
-      }
+      socketService.leaveRoom(roomCode)
     }
     
     localStorage.removeItem(STORAGE_KEY)
@@ -243,11 +220,6 @@ function ConversationMode() {
         try {
           const translated = await translateText(transcript, userLanguage, lang)
           message.translations[lang] = translated
-          
-          const participantsWithLang = participants.filter(p => p.language === lang && p.name !== userName)
-          if (participantsWithLang.length > 0) {
-            speakText(translated, lang)
-          }
         } catch (error) {
           console.error(`Translation error for ${lang}:`, error)
         }
@@ -255,6 +227,11 @@ function ConversationMode() {
     }
 
     setMessages(prev => [...prev, message])
+    socketService.sendMessage(roomCode, message)
+    
+    if (message.translations[userLanguage]) {
+      speakText(message.translations[userLanguage], userLanguage)
+    }
   }
 
   const speakText = (text, lang) => {
@@ -409,10 +386,23 @@ function ConversationMode() {
                 <h2 className="text-xl font-bold text-gray-800">Phòng: {roomCode}</h2>
                 <div className="flex items-center gap-2">
                   <p className="text-sm text-gray-600">{participants.length} người tham gia</p>
-                  <div className="flex items-center gap-1 text-xs text-green-600">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                    <span>Đang đồng bộ</span>
-                  </div>
+                  {isConnected ? (
+                    <div className="flex items-center gap-1 text-xs text-green-600">
+                      <Wifi className="w-3 h-3" />
+                      <span>Online</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-xs text-red-600">
+                      <WifiOff className="w-3 h-3" />
+                      <span>Offline</span>
+                    </div>
+                  )}
+                  {isConnecting ? (
+                    <div className="flex items-center gap-1 text-xs text-yellow-600">
+                      <Wifi className="w-3 h-3" />
+                      <span>Kết nối...</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
