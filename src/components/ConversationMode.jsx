@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import { Users, Mic, MicOff, Volume2, UserPlus, LogOut, Settings, Copy, Trash2 } from 'lucide-react'
+import { Users, Mic, MicOff, Volume2, UserPlus, LogOut, Settings, Copy, Trash2, RefreshCw } from 'lucide-react'
 import { translateText } from '../services/translationService'
 import { languages } from '../data/languages'
+
+const STORAGE_KEY = 'conversation_room_state'
+const PARTICIPANTS_KEY = 'conversation_participants'
 
 function ConversationMode() {
   const [roomCode, setRoomCode] = useState('')
@@ -16,12 +19,29 @@ function ConversationMode() {
   const [showSettings, setShowSettings] = useState(false)
   const [autoSpeak, setAutoSpeak] = useState(true)
   const [speechSpeed, setSpeechSpeed] = useState(0.9)
+  const [lastSync, setLastSync] = useState(Date.now())
   const recognitionRef = useRef(null)
   const synthesisRef = useRef(null)
   const messagesEndRef = useRef(null)
   const silenceTimerRef = useRef(null)
+  const syncIntervalRef = useRef(null)
 
   useEffect(() => {
+    const savedState = localStorage.getItem(STORAGE_KEY)
+    if (savedState) {
+      try {
+        const state = JSON.parse(savedState)
+        setRoomCode(state.roomCode)
+        setUserName(state.userName)
+        setUserLanguage(state.userLanguage)
+        setIsInRoom(state.isInRoom)
+        setMessages(state.messages || [])
+        addSystemMessage(`🔄 Đã khôi phục phòng ${state.roomCode}`)
+      } catch (error) {
+        console.error('Error restoring state:', error)
+      }
+    }
+
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
       recognitionRef.current = new SpeechRecognition()
@@ -53,8 +73,38 @@ function ConversationMode() {
       if (recognitionRef.current) {
         recognitionRef.current.stop()
       }
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current)
+      }
     }
   }, [])
+
+  useEffect(() => {
+    if (isInRoom && roomCode) {
+      const state = {
+        roomCode,
+        userName,
+        userLanguage,
+        isInRoom,
+        messages
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      
+      syncParticipants()
+      
+      syncIntervalRef.current = setInterval(() => {
+        syncParticipants()
+      }, 3000)
+      
+      return () => {
+        if (syncIntervalRef.current) {
+          clearInterval(syncIntervalRef.current)
+        }
+      }
+    } else {
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }, [isInRoom, roomCode, userName, userLanguage, messages])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -62,6 +112,42 @@ function ConversationMode() {
 
   const generateRoomCode = () => {
     return Math.random().toString(36).substring(2, 8).toUpperCase()
+  }
+
+  const syncParticipants = () => {
+    if (!roomCode) return
+    
+    const roomKey = `${PARTICIPANTS_KEY}_${roomCode}`
+    const currentUser = {
+      id: userName,
+      name: userName,
+      language: userLanguage,
+      lastSeen: Date.now()
+    }
+    
+    let allParticipants = []
+    try {
+      const stored = localStorage.getItem(roomKey)
+      if (stored) {
+        allParticipants = JSON.parse(stored)
+      }
+    } catch (error) {
+      console.error('Error reading participants:', error)
+    }
+    
+    const existingIndex = allParticipants.findIndex(p => p.id === userName)
+    if (existingIndex >= 0) {
+      allParticipants[existingIndex] = currentUser
+    } else {
+      allParticipants.push(currentUser)
+    }
+    
+    const now = Date.now()
+    allParticipants = allParticipants.filter(p => now - p.lastSeen < 10000)
+    
+    localStorage.setItem(roomKey, JSON.stringify(allParticipants))
+    setParticipants(allParticipants)
+    setLastSync(now)
   }
 
   const createRoom = () => {
@@ -72,7 +158,6 @@ function ConversationMode() {
     const code = generateRoomCode()
     setRoomCode(code)
     setIsInRoom(true)
-    setParticipants([{ id: 1, name: userName, language: userLanguage, isHost: true }])
     addSystemMessage(`Phòng ${code} đã được tạo. Chia sẻ mã này với người khác để họ tham gia.`)
   }
 
@@ -82,25 +167,33 @@ function ConversationMode() {
       return
     }
     setIsInRoom(true)
-    const newParticipant = { 
-      id: Date.now(), 
-      name: userName, 
-      language: userLanguage, 
-      isHost: false 
-    }
-    setParticipants(prev => [...prev, newParticipant])
-    addSystemMessage(`${userName} đã tham gia phòng`)
+    addSystemMessage(`${userName} đã tham gia phòng ${roomCode}`)
   }
 
   const leaveRoom = () => {
     if (isListening) {
       stopListening()
     }
+    
+    if (roomCode) {
+      const roomKey = `${PARTICIPANTS_KEY}_${roomCode}`
+      try {
+        const stored = localStorage.getItem(roomKey)
+        if (stored) {
+          let allParticipants = JSON.parse(stored)
+          allParticipants = allParticipants.filter(p => p.id !== userName)
+          localStorage.setItem(roomKey, JSON.stringify(allParticipants))
+        }
+      } catch (error) {
+        console.error('Error removing participant:', error)
+      }
+    }
+    
+    localStorage.removeItem(STORAGE_KEY)
     setIsInRoom(false)
     setRoomCode('')
     setParticipants([])
     setMessages([])
-    addSystemMessage(`${userName} đã rời khỏi phòng`)
   }
 
   const addSystemMessage = (text) => {
@@ -294,7 +387,13 @@ function ConversationMode() {
               <Users className="w-6 h-6 text-purple-600" />
               <div>
                 <h2 className="text-xl font-bold text-gray-800">Phòng: {roomCode}</h2>
-                <p className="text-sm text-gray-600">{participants.length} người tham gia</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm text-gray-600">{participants.length} người tham gia</p>
+                  <div className="flex items-center gap-1 text-xs text-green-600">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span>Đang đồng bộ</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -383,24 +482,36 @@ function ConversationMode() {
             Người tham gia
           </h3>
           <div className="space-y-2">
-            {participants.map((participant) => (
-              <div
-                key={participant.id}
-                className="p-3 bg-gray-50 rounded-lg border border-gray-200"
-              >
-                <div className="font-medium text-gray-800 flex items-center gap-2">
-                  {participant.name}
-                  {participant.isHost && (
-                    <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded">
-                      Host
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-gray-600 mt-1">
-                  {languages.find(l => l.code === participant.language)?.name}
-                </div>
+            {participants.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <Users className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">Chưa có người tham gia</p>
               </div>
-            ))}
+            ) : (
+              participants.map((participant) => (
+                <div
+                  key={participant.id}
+                  className={`p-3 rounded-lg border ${
+                    participant.name === userName
+                      ? 'bg-purple-50 border-purple-200'
+                      : 'bg-gray-50 border-gray-200'
+                  }`}
+                >
+                  <div className="font-medium text-gray-800 flex items-center gap-2">
+                    <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                    {participant.name}
+                    {participant.name === userName && (
+                      <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded">
+                        Bạn
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1 ml-4">
+                    {languages.find(l => l.code === participant.language)?.name}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
