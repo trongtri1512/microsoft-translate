@@ -46,10 +46,16 @@ class SocketService {
   joinRoom(roomCode, userName, userLanguage) {
     if (!this.socket) this.connect()
     
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        console.warn('⚠️ Server timeout - using offline mode')
+        resolve({ roomCode, participants: [] })
+      }, 3000)
+      
       this.socket.emit('join-room', { roomCode, userName, userLanguage })
       
       this.socket.once('room-joined', (data) => {
+        clearTimeout(timeout)
         console.log(`✅ Joined room ${data.roomCode} with ${data.participants.length} participants`)
         resolve(data)
       })

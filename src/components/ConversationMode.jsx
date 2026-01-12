@@ -3,8 +3,10 @@ import { Users, Mic, MicOff, Volume2, UserPlus, LogOut, Settings, Copy, Trash2, 
 import { translateText } from '../services/translationService'
 import { languages } from '../data/languages'
 import socketService from '../services/socketService'
+import localStorageSync from '../services/localStorageSync'
 
 const STORAGE_KEY = 'conversation_room_state'
+const USE_WEBSOCKET = false
 
 function ConversationMode() {
   const [roomCode, setRoomCode] = useState('')
@@ -20,6 +22,7 @@ function ConversationMode() {
   const [autoSpeak, setAutoSpeak] = useState(true)
   const [speechSpeed, setSpeechSpeed] = useState(0.9)
   const [isConnected, setIsConnected] = useState(false)
+  const [useOfflineMode, setUseOfflineMode] = useState(!USE_WEBSOCKET)
   const recognitionRef = useRef(null)
   const synthesisRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -39,18 +42,29 @@ function ConversationMode() {
       }
     }
 
-    const socket = socketService.connect()
-    setIsConnected(socket.connected)
+    if (USE_WEBSOCKET) {
+      const socket = socketService.connect()
+      setIsConnected(socket.connected)
 
-    socket.on('connect', () => {
-      setIsConnected(true)
-      console.log('✅ Connected to server')
-    })
+      socket.on('connect', () => {
+        setIsConnected(true)
+        setUseOfflineMode(false)
+        console.log('✅ Connected to server')
+      })
 
-    socket.on('disconnect', () => {
-      setIsConnected(false)
-      console.log('❌ Disconnected from server')
-    })
+      socket.on('disconnect', () => {
+        setIsConnected(false)
+        console.log('❌ Disconnected from server')
+      })
+
+      socket.on('connect_error', () => {
+        setUseOfflineMode(true)
+        console.log('⚠️ Using offline mode (localStorage)')
+      })
+    } else {
+      setUseOfflineMode(true)
+      console.log('📱 Offline mode enabled (localStorage only)')
+    }
 
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -83,8 +97,11 @@ function ConversationMode() {
       if (recognitionRef.current) {
         recognitionRef.current.stop()
       }
-      socketService.offAllListeners()
-      socketService.disconnect()
+      if (USE_WEBSOCKET) {
+        socketService.offAllListeners()
+        socketService.disconnect()
+      }
+      localStorageSync.stopSync()
     }
   }, [])
 
@@ -104,33 +121,43 @@ function ConversationMode() {
 
   useEffect(() => {
     if (isInRoom && roomCode && userName) {
-      socketService.onParticipantsUpdated((participants) => {
-        console.log(`👥 Participants updated: ${participants.length}`, participants)
-        setParticipants(participants)
-      })
+      if (useOfflineMode) {
+        localStorageSync.startSync(roomCode, userName, userLanguage, (participants) => {
+          setParticipants(participants)
+        })
+      } else {
+        socketService.onParticipantsUpdated((participants) => {
+          console.log(`👥 Participants updated: ${participants.length}`, participants)
+          setParticipants(participants)
+        })
 
-      socketService.onUserJoined(({ userName: newUser, userLanguage: newLang }) => {
-        addSystemMessage(`${newUser} đã tham gia phòng`)
-      })
+        socketService.onUserJoined(({ userName: newUser, userLanguage: newLang }) => {
+          addSystemMessage(`${newUser} đã tham gia phòng`)
+        })
 
-      socketService.onUserLeft(({ userName: leftUser }) => {
-        addSystemMessage(`${leftUser} đã rời khỏi phòng`)
-      })
+        socketService.onUserLeft(({ userName: leftUser }) => {
+          addSystemMessage(`${leftUser} đã rời khỏi phòng`)
+        })
 
-      socketService.onNewMessage((message) => {
-        setMessages(prev => [...prev, message])
-        
-        const myLanguage = userLanguage
-        if (message.translations[myLanguage]) {
-          speakText(message.translations[myLanguage], myLanguage)
-        }
-      })
+        socketService.onNewMessage((message) => {
+          setMessages(prev => [...prev, message])
+          
+          const myLanguage = userLanguage
+          if (message.translations[myLanguage]) {
+            speakText(message.translations[myLanguage], myLanguage)
+          }
+        })
+      }
 
       return () => {
-        socketService.offAllListeners()
+        if (useOfflineMode) {
+          localStorageSync.stopSync()
+        } else {
+          socketService.offAllListeners()
+        }
       }
     }
-  }, [isInRoom, roomCode, userName, userLanguage])
+  }, [isInRoom, roomCode, userName, userLanguage, useOfflineMode])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -149,14 +176,25 @@ function ConversationMode() {
     const code = generateRoomCode()
     setRoomCode(code)
     
-    try {
-      const data = await socketService.joinRoom(code, userName, userLanguage)
+    if (useOfflineMode) {
       setIsInRoom(true)
-      setParticipants(data.participants)
+      const participants = localStorageSync.syncParticipants(code, userName, userLanguage)
+      setParticipants(participants)
       addSystemMessage(`Phòng ${code} đã được tạo. Chia sẻ mã này với người khác để họ tham gia.`)
-    } catch (error) {
-      console.error('Error creating room:', error)
-      alert('Không thể tạo phòng. Vui lòng thử lại.')
+    } else {
+      try {
+        const data = await socketService.joinRoom(code, userName, userLanguage)
+        setIsInRoom(true)
+        setParticipants(data.participants)
+        addSystemMessage(`Phòng ${code} đã được tạo. Chia sẻ mã này với người khác để họ tham gia.`)
+      } catch (error) {
+        console.error('Error creating room:', error)
+        setUseOfflineMode(true)
+        setIsInRoom(true)
+        const participants = localStorageSync.syncParticipants(code, userName, userLanguage)
+        setParticipants(participants)
+        addSystemMessage(`⚠️ Chế độ offline: Phòng ${code} đã được tạo (chỉ hoạt động trên cùng thiết bị).`)
+      }
     }
   }
 
@@ -166,14 +204,25 @@ function ConversationMode() {
       return
     }
     
-    try {
-      const data = await socketService.joinRoom(roomCode, userName, userLanguage)
+    if (useOfflineMode) {
       setIsInRoom(true)
-      setParticipants(data.participants)
+      const participants = localStorageSync.syncParticipants(roomCode, userName, userLanguage)
+      setParticipants(participants)
       addSystemMessage(`${userName} đã tham gia phòng ${roomCode}`)
-    } catch (error) {
-      console.error('Error joining room:', error)
-      alert('Không thể tham gia phòng. Vui lòng kiểm tra mã phòng.')
+    } else {
+      try {
+        const data = await socketService.joinRoom(roomCode, userName, userLanguage)
+        setIsInRoom(true)
+        setParticipants(data.participants)
+        addSystemMessage(`${userName} đã tham gia phòng ${roomCode}`)
+      } catch (error) {
+        console.error('Error joining room:', error)
+        setUseOfflineMode(true)
+        setIsInRoom(true)
+        const participants = localStorageSync.syncParticipants(roomCode, userName, userLanguage)
+        setParticipants(participants)
+        addSystemMessage(`⚠️ Chế độ offline: ${userName} đã tham gia phòng ${roomCode} (chỉ hoạt động trên cùng thiết bị).`)
+      }
     }
   }
 
@@ -183,7 +232,12 @@ function ConversationMode() {
     }
     
     if (roomCode) {
-      socketService.leaveRoom(roomCode)
+      if (useOfflineMode) {
+        localStorageSync.removeParticipant(roomCode, userName)
+        localStorageSync.stopSync()
+      } else {
+        socketService.leaveRoom(roomCode)
+      }
     }
     
     localStorage.removeItem(STORAGE_KEY)
@@ -227,7 +281,10 @@ function ConversationMode() {
     }
 
     setMessages(prev => [...prev, message])
-    socketService.sendMessage(roomCode, message)
+    
+    if (!useOfflineMode) {
+      socketService.sendMessage(roomCode, message)
+    }
     
     if (message.translations[userLanguage]) {
       speakText(message.translations[userLanguage], userLanguage)
@@ -386,23 +443,22 @@ function ConversationMode() {
                 <h2 className="text-xl font-bold text-gray-800">Phòng: {roomCode}</h2>
                 <div className="flex items-center gap-2">
                   <p className="text-sm text-gray-600">{participants.length} người tham gia</p>
-                  {isConnected ? (
+                  {useOfflineMode ? (
+                    <div className="flex items-center gap-1 text-xs text-blue-600">
+                      <Users className="w-3 h-3" />
+                      <span>Chế độ cùng thiết bị</span>
+                    </div>
+                  ) : isConnected ? (
                     <div className="flex items-center gap-1 text-xs text-green-600">
                       <Wifi className="w-3 h-3" />
-                      <span>Online</span>
+                      <span>Cross-device</span>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1 text-xs text-red-600">
+                    <div className="flex items-center gap-1 text-xs text-yellow-600">
                       <WifiOff className="w-3 h-3" />
-                      <span>Offline</span>
+                      <span>Đang kết nối...</span>
                     </div>
                   )}
-                  {isConnecting ? (
-                    <div className="flex items-center gap-1 text-xs text-yellow-600">
-                      <Wifi className="w-3 h-3" />
-                      <span>Kết nối...</span>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             </div>
