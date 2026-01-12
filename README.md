@@ -80,7 +80,11 @@ Sau khi build, các file sẽ được tạo trong thư mục `dist/`
 - **TailwindCSS**: Styling
 - **Lucide React**: Icons đẹp mắt
 - **Axios**: HTTP client
-- **MyMemory Translation API**: API dịch thuật miễn phí
+- **Multi-API Translation System**: 4 API miễn phí với auto-fallback
+  - MyMemory Translation API
+  - LibreTranslate
+  - Lingva Translate
+  - Argos Translate
 
 ## 🎯 Cách sử dụng
 
@@ -141,14 +145,23 @@ English, Tiếng Việt, Español, Français, Deutsch, Italiano, Português, Р�
 
 ## 📝 Lưu ý
 
-- API MyMemory có giới hạn 5000 ký tự mỗi lần dịch
-- Để sử dụng không giới hạn, bạn có thể đăng ký API key miễn phí tại [MyMemory](https://mymemory.translated.net/)
+### 🌐 Translation APIs
+- **Auto-Fallback System**: Tự động chuyển đổi giữa 4 API miễn phí khi gặp lỗi
+- **Không giới hạn**: Khi một API hết hạn mức, tự động chuyển sang API khác
+- **API Status Monitor**: Widget góc dưới trái hiển thị API đang dùng và thống kê
+- Xem chi tiết trong `API-GUIDE.md`
+
+### 🎤 Speech Features
 - Tính năng Text-to-Speech và Speech Recognition sử dụng Web Speech API có sẵn trong trình duyệt
 - **Conversation Mode** yêu cầu:
   - Trình duyệt hỗ trợ Web Speech API (Chrome, Edge, Safari)
   - Quyền truy cập microphone
   - Kết nối internet ổn định
-- Hiện tại Conversation Mode chỉ hoạt động local (không có backend real-time). Để sử dụng thực tế với nhiều người, cần tích hợp WebSocket/Socket.io
+
+### 🔧 Nâng cao
+- Hiện tại Conversation Mode hoạt động local (không có backend real-time)
+- Để sử dụng thực tế với nhiều người từ xa, cần tích hợp WebSocket/Socket.io
+- Có thể đăng ký API key miễn phí để tăng hạn mức tại [MyMemory](https://mymemory.translated.net/)
 
 ## 🔧 Tùy chỉnh
 
