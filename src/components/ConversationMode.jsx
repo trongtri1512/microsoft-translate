@@ -89,22 +89,33 @@ function ConversationMode() {
         messages
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    } else {
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }, [isInRoom, roomCode, userName, userLanguage, messages])
+
+  useEffect(() => {
+    if (isInRoom && roomCode && userName) {
+      console.log(`[Sync] Starting sync for ${userName} in room ${roomCode}`)
       
       syncParticipants()
+      
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current)
+      }
       
       syncIntervalRef.current = setInterval(() => {
         syncParticipants()
       }, 3000)
       
       return () => {
+        console.log(`[Sync] Stopping sync for ${userName}`)
         if (syncIntervalRef.current) {
           clearInterval(syncIntervalRef.current)
         }
       }
-    } else {
-      localStorage.removeItem(STORAGE_KEY)
     }
-  }, [isInRoom, roomCode, userName, userLanguage, messages])
+  }, [isInRoom, roomCode, userName, userLanguage])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -115,7 +126,7 @@ function ConversationMode() {
   }
 
   const syncParticipants = () => {
-    if (!roomCode) return
+    if (!roomCode || !userName) return
     
     const roomKey = `${PARTICIPANTS_KEY}_${roomCode}`
     const currentUser = {
@@ -130,20 +141,29 @@ function ConversationMode() {
       const stored = localStorage.getItem(roomKey)
       if (stored) {
         allParticipants = JSON.parse(stored)
+        console.log(`[Sync] Read ${allParticipants.length} participants from storage`)
       }
     } catch (error) {
-      console.error('Error reading participants:', error)
+      console.error('[Sync] Error reading participants:', error)
     }
     
     const existingIndex = allParticipants.findIndex(p => p.id === userName)
     if (existingIndex >= 0) {
       allParticipants[existingIndex] = currentUser
+      console.log(`[Sync] Updated ${userName} in participants list`)
     } else {
       allParticipants.push(currentUser)
+      console.log(`[Sync] Added ${userName} to participants list`)
     }
     
     const now = Date.now()
+    const beforeFilter = allParticipants.length
     allParticipants = allParticipants.filter(p => now - p.lastSeen < 10000)
+    if (beforeFilter !== allParticipants.length) {
+      console.log(`[Sync] Removed ${beforeFilter - allParticipants.length} offline participants`)
+    }
+    
+    console.log(`[Sync] Final participant count: ${allParticipants.length}`, allParticipants.map(p => p.name))
     
     localStorage.setItem(roomKey, JSON.stringify(allParticipants))
     setParticipants(allParticipants)
