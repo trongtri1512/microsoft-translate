@@ -3,6 +3,7 @@ import { Volume2, Copy, ArrowLeftRight, X, Mic, Languages, Users, MessageSquare 
 import { translateText, detectLanguage } from './services/translationService'
 import { languages } from './data/languages'
 import ConversationMode from './components/ConversationMode'
+import APIStatus from './components/APIStatus'
 
 function App() {
   const [mode, setMode] = useState('text')
@@ -254,10 +255,11 @@ function App() {
           </div>
 
           <div className="mt-6 text-center text-sm text-gray-600">
-            <p>Powered by MyMemory Translation API</p>
+            <p>Powered by Multiple Translation APIs with Auto-Fallback</p>
           </div>
         </div>
       </div>
+      <APIStatus />
     </div>
   )
 }
