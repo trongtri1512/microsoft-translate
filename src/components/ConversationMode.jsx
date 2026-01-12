@@ -125,6 +125,26 @@ function ConversationMode() {
         localStorageSync.startSync(roomCode, userName, userLanguage, (participants) => {
           setParticipants(participants)
         })
+
+        const handleNewMessage = (message) => {
+          if (message.speaker !== userName) {
+            console.log('[LocalSync] Received message from:', message.speaker)
+            setMessages(prev => [...prev, message])
+            
+            const myLanguage = userLanguage
+            const textToSpeak = message.translations[myLanguage] || message.originalText
+            if (textToSpeak && autoSpeak) {
+              speakText(textToSpeak, myLanguage)
+            }
+          }
+        }
+
+        localStorageSync.onMessage(handleNewMessage)
+
+        return () => {
+          localStorageSync.stopSync()
+          localStorageSync.offMessage(handleNewMessage)
+        }
       } else {
         socketService.onParticipantsUpdated((participants) => {
           console.log(`👥 Participants updated: ${participants.length}`, participants)
@@ -147,17 +167,13 @@ function ConversationMode() {
             speakText(message.translations[myLanguage], myLanguage)
           }
         })
-      }
 
-      return () => {
-        if (useOfflineMode) {
-          localStorageSync.stopSync()
-        } else {
+        return () => {
           socketService.offAllListeners()
         }
       }
     }
-  }, [isInRoom, roomCode, userName, userLanguage, useOfflineMode])
+  }, [isInRoom, roomCode, userName, userLanguage, useOfflineMode, autoSpeak])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -247,6 +263,13 @@ function ConversationMode() {
     setMessages([])
   }
 
+  const clearMessages = () => {
+    if (useOfflineMode) {
+      localStorageSync.clearMessages(roomCode)
+    }
+    setMessages([])
+  }
+
   const addSystemMessage = (text) => {
     setMessages(prev => [...prev, {
       id: Date.now(),
@@ -277,18 +300,20 @@ function ConversationMode() {
         } catch (error) {
           console.error(`Translation error for ${lang}:`, error)
         }
+      } else {
+        message.translations[lang] = transcript
       }
     }
 
     setMessages(prev => [...prev, message])
     
-    if (!useOfflineMode) {
+    if (useOfflineMode) {
+      localStorageSync.broadcastMessage(roomCode, message)
+    } else {
       socketService.sendMessage(roomCode, message)
     }
     
-    if (message.translations[userLanguage]) {
-      speakText(message.translations[userLanguage], userLanguage)
-    }
+    console.log('[Voice] Message sent:', message.originalText)
   }
 
   const speakText = (text, lang) => {
@@ -337,11 +362,6 @@ function ConversationMode() {
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomCode)
     alert('Đã sao chép mã phòng!')
-  }
-
-  const clearMessages = () => {
-    setMessages([])
-    addSystemMessage('Lịch sử hội thoại đã được xóa')
   }
 
   if (!isInRoom) {
